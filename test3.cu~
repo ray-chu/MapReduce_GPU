@@ -1,0 +1,28 @@
+__device__ bool isChar(char c){
+	if(((c<='z')&&(c>='a'))||((c<='Z')&&(c>='A')))
+		return true;
+	else
+		return false;
+}
+
+__device__ void emitMapCount(int key_size, int value_size){
+	
+}
+
+__device__ void mapCount(char*key,char*value,size_t key_size, size_t value_size){
+	unsigned int i;
+	unsigned int key_im_size=0;
+	unsigned int value_im_size=0;
+	for(i=0;i<value_size;){
+		while((i<value_size)&&!isChar(*(value+i)))
+			i++;
+		int start = i;
+		while((i<value_size)&&isChar(*(value+i)))
+			i++;
+		if(start<i){
+			key_im_size+=(i-start);
+			value_im_size+=sizeof(int);
+		}
+	}
+	emitMapCount(key_im_size,value_im_size);
+}
