@@ -397,9 +397,7 @@ void quick_sort(char*im_keys,Index*im_index,int len){                           
 		int st_pos=0;
 		Index *swap=(Index*)malloc(sizeof(Index));
 		for(int i=0;i<len-1;i++){
-
 			char cur[(im_index+i)->key_size];
-
 			strncpy(cur,im_keys+(im_index+i)->key_offset,(im_index+i)->key_size);	
 			if(strcmp(cur,piovt_value)<=0){	
 				my_swap(im_index+i,im_index+st_pos,swap);
@@ -431,6 +429,28 @@ void sort(MapReduceSpec* spec){
 	printf("%s \n",spec->im_keys);
 }
 
+void reduce_split(MapReduceSpec* spec){
+	int i,j;
+	int reduce_split_total=0;
+	int2*reduce_split_index;
+	for(i=0;i<im_num_total;){
+		char st[(spec->im_index+i)->key_size];
+		strncpy(st,spec->im_keys+(spec->im_index+i)->key_offset,(spec->im_index+i)->key_size);
+		for(j=i+1;j<im_num_total;j++){
+			if((spec->im_index+j)->key_size!=(spec->im_index+i)->key_size) break;
+			char cur[(spec->im_index+j)->key_size];
+			strncpy(cur,spec->im_keys+(spec->im_index+j)->key_offset,(spec->im_index+j)->key_size);
+			if(strcmp(cur,st)!=0) break;			
+		}
+		reduce_split_total++;
+		// reduce_split_index=(int2*)realloc(reduce_split_index,reduce_split_total*sizeof(int2));
+		// (reduce_split_index+reduce_split_total-1)->x=i;
+		// (reduce_split_index+reduce_split_total-1)->y=j-i;
+		i=j;
+	}
+	//printf("%d %d\n",reduce_split_index->x,reduce_split_index->y);
+}
+
 void mapReduce(char *path,MapReduceSpec* spec){
 	MapFileList* plist;
 	plist=(MapFileList*)malloc(sizeof(MapFileList));
@@ -450,6 +470,7 @@ void mapReduce(char *path,MapReduceSpec* spec){
 	map_input_split(spec);
 	map_count_phase(spec);
 	map_phase(spec);
+	reduce_split(spec);
 }
 
 MAP_COUNT{

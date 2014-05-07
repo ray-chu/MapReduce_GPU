@@ -32,6 +32,10 @@ typedef struct MapReduceSpec{
 	char* im_keys;
 	unsigned* im_values;
 	Index* im_index;
+	int2* reduce_split_index;               //int2 is (x,y) cuda data structure. Here x means split point offset in im_index, y is the size of this slice.
+	char* output_keys;
+	int* output_values;
+	Index* output_index;
 	int map_input_num;
 	int map_block_num;
 	int map_thread_num;
@@ -40,6 +44,7 @@ typedef struct MapReduceSpec{
 
 int im_num_total=0;
 int im_key_total_size=0;
+int reduce_split_total=0;
 
 char* d_map_input_keys;
 char* d_map_input_values;
@@ -82,6 +87,10 @@ void init_mapreduce_spec(MapReduceSpec* spec){
 	spec->im_keys=NULL;
 	spec->im_values=NULL;
 	spec->im_index=NULL;
+	spec->reduce_split_index=NULL;
+	spec->output_keys=NULL;
+	spec->output_values=NULL;
+	spec->output_index=NULL;
 	spec->map_input_num=0;
 	spec->map_block_num=0;
 	spec->map_thread_num=512;
@@ -99,6 +108,10 @@ void free_spec(MapReduceSpec* spec){
 	free(spec->im_keys);
 	free(spec->im_values);
 	free(spec->im_index);
+	free(spec->reduce_split_index);
+	free(spec->output_keys);
+	free(spec->output_values);
+	free(spec->output_index);
 	free(spec);
 }
 
@@ -141,10 +154,10 @@ void map_input_split(MapReduceSpec* spec){
 				while (result!= -1) {					
 					size_t value_size = 0;
 					size_t key_size=0;
-					char* temp_key=NULL;
+					char temp_key[10];
 					char* temp_value=NULL;
 
-					temp_key=(char*)malloc(10);
+//					temp_key=(char*)malloc(10);
 					sprintf(temp_key,"%d",(int)ftell(pFile));
 					key_size=strlen(temp_key)+1;                      //get the new key's size
 
@@ -164,7 +177,7 @@ void map_input_split(MapReduceSpec* spec){
 					key_array_size+=key_size;
 					value_array_size+=value_size;
 					index_array_size++;
-					free(temp_key); free(temp_value);
+					free(temp_value);
 				}
 				buffer_used=buffer_used+file_size;
 			}
@@ -325,6 +338,7 @@ void map_phase(MapReduceSpec* spec){
 		im_num_total+=*(spec->map_im_num+i);
 	}
 	printf("Map output entries: %d\n",im_num_total);
+	printf("im key total size %d\n",im_key_total_size);
 	
 	//printf("loc[1].key_offset %d\n",im_loc[1].key_offset);	
 
@@ -361,7 +375,7 @@ void map_phase(MapReduceSpec* spec){
 	cudaMemcpy(spec->im_keys,d_im_keys,im_key_total_size,cudaMemcpyDeviceToHost);
 	cudaMemcpy(spec->im_values,d_im_values,im_value_total_size,cudaMemcpyDeviceToHost);
 	cudaMemcpy(spec->im_index,d_im_index,im_num_total*sizeof(Index),cudaMemcpyDeviceToHost);	
-//	printf("%s \n%s \n",spec->im_keys,spec->map_input_values+(spec->map_input_index+1)->value_offset);
+	printf("%s \n%s \n",spec->im_keys,spec->map_input_values+(spec->map_input_index+1)->value_offset);
 	//printf("%d\n",*(spec->im_values+1));
 
 	free(spec->map_input_keys);
@@ -389,33 +403,39 @@ void my_swap(Index*e1,Index*e2,Index*swap){
 	*e2=*swap;
 }
 
-//int tmp;
+//int tmp=0;
 void quick_sort(char*im_keys,Index*im_index,int len){                             //in-place quick_sort
-	if(len>1){
-		char piovt_value[(im_index+len)->key_size];
-		strncpy(piovt_value,im_keys+(im_index+len)->key_offset,(im_index+len)->key_size);
+	if(len>0){
+		char piovt_value[(im_index+len)->key_size+1];
+		strncpy(piovt_value,im_keys+(im_index+len)->key_offset,(im_index+len)->key_size);	       
+		piovt_value[(im_index+len)->key_size]=NULL;
+		//printf("piovt is: %s\n",piovt_value);
 		int st_pos=0;
-		Index *swap=(Index*)malloc(sizeof(Index));
-		for(int i=0;i<len-1;i++){
-
-			char cur[(im_index+i)->key_size];
-
-			strncpy(cur,im_keys+(im_index+i)->key_offset,(im_index+i)->key_size);	
+		Index swap;
+		for(int i=0;i<len;i++){
+			char cur[(im_index+i)->key_size+1];
+			strncpy(cur,im_keys+(im_index+i)->key_offset,(im_index+i)->key_size);
+			cur[(im_index+i)->key_size]=NULL;
 			if(strcmp(cur,piovt_value)<=0){	
-				my_swap(im_index+i,im_index+st_pos,swap);
+				my_swap(im_index+i,im_index+st_pos,&swap);
 				st_pos++;
 			}
 		}
-		my_swap(im_index+st_pos,im_index+len,swap);
+		my_swap(im_index+st_pos,im_index+len,&swap);
+		//	printf("%d %d\n",(im_index+st_pos)->key_offset,(im_index+st_pos)->key_size);
 		//free(piovt_value);
-		free(swap);
+		//free(swap);
+		//tmp++;
+		//if(tmp<100){
+//		printf("%d, %d %d\n",st_pos-1,len-st_pos,len);
 		quick_sort(im_keys,im_index,st_pos-1);
-		quick_sort(im_keys,im_index+st_pos+1,len-st_pos);
+		quick_sort(im_keys,im_index+st_pos+1,len-st_pos-1);           //carefully design. len is not length here. It's the last entry_index. It should be length -1;
 	}
 }
 
 void sort(MapReduceSpec* spec){
 //	while(1)
+//	printf("%d %d\n",(spec->im_index+im_num_total-1)->key_offset,(spec->im_index+im_num_total-1)->key_size);
 	quick_sort(spec->im_keys,spec->im_index,im_num_total-1);
 	char sorted_im_keys[im_key_total_size];
 	char *tmp=sorted_im_keys;
@@ -427,8 +447,70 @@ void sort(MapReduceSpec* spec){
 //	tmp=spec->im_keys;
 
 //	free(spec->im_keys);
-	spec->im_keys=sorted_im_keys;
-	printf("%s \n",spec->im_keys);
+//	spec->im_keys=sorted_im_keys;
+//	printf("%s \n",sorted_im_keys);
+}
+
+void reduce_split(MapReduceSpec* spec){
+	int i,j;
+	int output_key_size=0;
+	int2 reduce_split_tmp[im_num_total];
+	for(i=0;i<im_num_total;){
+		char st[(spec->im_index+i)->key_size+1];
+		strncpy(st,spec->im_keys+(spec->im_index+i)->key_offset,(spec->im_index+i)->key_size);
+		st[(spec->im_index+i)->key_size]=NULL;
+		for(j=i+1;j<im_num_total;j++){
+			if((spec->im_index+j)->key_size!=(spec->im_index+i)->key_size) break;
+			char cur[(spec->im_index+j)->key_size+1];
+			strncpy(cur,spec->im_keys+(spec->im_index+j)->key_offset,(spec->im_index+j)->key_size);
+			//	printf("%d,%d\n",(spec->im_index+j)->key_offset,(spec->im_index+i)->key_offset);
+			cur[(spec->im_index+j)->key_size]=NULL;
+			//printf("%s,%s\n",cur,st);
+			if(strcmp(cur,st)!=0) break;			
+		}
+		reduce_split_total++;
+		output_key_size+=(spec->im_index+i)->key_size;
+		//reduce_split_index=(int2*)realloc(reduce_split_index,reduce_split_total*sizeof(int2));
+		(reduce_split_tmp+reduce_split_total-1)->x=i;
+		(reduce_split_tmp+reduce_split_total-1)->y=j-i;
+		i=j;
+	}
+	int2 reduce_split_index[reduce_split_total];
+	//spec->reduce_split_index=(int2*)malloc(reduce_split_total*sizeof(int2));
+	spec->reduce_split_index=reduce_split_index;
+	
+	memcpy(spec->reduce_split_index,reduce_split_tmp,reduce_split_total*sizeof(int2));
+	memset(spec->im_values,1,im_num_total*sizeof(unsigned));
+
+	char output_key[output_key_size];
+	int output_value[reduce_split_total];
+	Index output_index[reduce_split_total];
+	int of_tmp=0;
+	for(i=0;i<reduce_split_total;i++){
+		output_index[i].key_offset=of_tmp;
+		int size_tmp=(spec->im_index+(spec->reduce_split_index+i)->x)->key_size;
+		strncpy(output_key+of_tmp,(spec->im_keys+(spec->im_index+(spec->reduce_split_index+i)->x)->key_offset),size_tmp);
+		of_tmp+=size_tmp;
+		output_index[i].key_size=size_tmp;
+		output_value[i]=(spec->reduce_split_index+i)->y;
+		output_index[i].value_offset=i;
+		output_index[i].value_size=1;		
+	}
+	spec->output_keys=output_key;
+	spec->output_values=output_value;
+	spec->output_index=output_index;
+	//printf("%d %d split_number: %d\n",spec->reduce_split_index->x,spec->reduce_split_index->y,reduce_split_total);
+	for(i=0;i<reduce_split_total;i++){
+		char tmp[(spec->output_index+i)->key_size+1];
+		strncpy(tmp,(spec->output_keys+(spec->output_index+i)->key_offset),(spec->output_index+i)->key_size);
+		tmp[(spec->output_index+i)->key_size]=NULL;
+		printf("key: %s; values: %d\n",tmp,*(spec->output_values+i));
+	}
+//	printf("%s \n",spec->output_keys);
+}
+
+void reduce_phase(MapReduceSpec* spec){
+	
 }
 
 void mapReduce(char *path,MapReduceSpec* spec){
@@ -450,6 +532,7 @@ void mapReduce(char *path,MapReduceSpec* spec){
 	map_input_split(spec);
 	map_count_phase(spec);
 	map_phase(spec);
+	reduce_split(spec);
 }
 
 MAP_COUNT{
